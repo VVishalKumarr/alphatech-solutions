@@ -1,0 +1,209 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style>
+</head><body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+// Cinematic loop: low dolly along a live cable tray at night.
+// Everything periodic in T so frame N == frame 0.
+const W = 1920, H = 1080, T = 8;            // seconds
+const TAU = Math.PI * 2;
+const c = document.getElementById('c'), ctx = c.getContext('2d');
+const L = 72;                                // visible depth
+const RUNG = 3;                              // rung spacing (m)
+const SPEED = RUNG * 2 / T * 2;              // 4 rungs per loop -> seamless
+// layers for depth of field
+function layer(){ const k=document.createElement('canvas'); k.width=W; k.height=H; return k; }
+const far = layer(), mid = layer(), near = layer(), glow = layer();
+const fx = far.getContext('2d'), mx = mid.getContext('2d'), nx = near.getContext('2d'), gx = glow.getContext('2d');
+
+// seeded random
+let s = 1337; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
+
+// cables in tray: x offsets (m), y = 0 plane at tray bed
+const cables = [];
+const phaseCols = [[232,72,68],[246,184,52],[70,126,246]];
+for (let i = 0; i < 14; i++) {
+  const x = -1.35 + i * 0.2 + (rnd() - .5) * .04;
+  const isPhase = i >= 5 && i <= 7;
+  cables.push({ x, y: .02 + rnd() * .03, r: isPhase ? .055 : .035 + rnd() * .012,
+    col: isPhase ? phaseCols[i - 5] : [56 + rnd()*20, 60 + rnd()*14, 66 + rnd()*16],
+    phase: isPhase,
+    pulses: Array.from({length: isPhase ? 3 : (rnd() < .5 ? 1 : 0)}, () => ({ off: rnd(), k: isPhase ? 1 : 2 })) });
+}
+// dust motes (bokeh)
+const motes = Array.from({length: 70}, () => ({ x: (rnd()-.5)*7, y: rnd()*3.2 - .2, z: rnd()*L, sz: .4 + rnd(), ph: rnd() }));
+
+function cam(t){
+  const a = TAU * t / T;
+  return { x: Math.sin(a) * .22, y: .62 + Math.sin(a*2 + 1) * .05, roll: Math.sin(a) * .012 };
+}
+const F = 980;
+function P(X, Y, Z, cm){
+  const z = Math.max(Z, .05);
+  let x = (X - cm.x) * F / z, y = -(Y - cm.y) * F / z;
+  const cr = Math.cos(cm.roll), sr = Math.sin(cm.roll);
+  return [W/2 + x*cr - y*sr, H*0.40 + x*sr + y*cr, z];
+}
+function fog(z){ return Math.max(0, 1 - z / L) ** 1.6; }
+function ctxFor(z){ return z < 3.2 ? nx : z > 22 ? fx : mx; }
+
+function draw(t){
+  const cm = cam(t);
+  const travel = (t * SPEED) % RUNG;
+  for (const g of [fx, mx, nx, gx]) g.clearRect(0,0,W,H);
+
+  // background: deep teal night with warm horizon bloom
+  const bg = ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#05080c'); bg.addColorStop(.38,'#0b1418'); bg.addColorStop(.46,'#13181a'); bg.addColorStop(1,'#030405');
+  ctx.globalCompositeOperation='source-over'; ctx.filter='none';
+  ctx.fillStyle = bg; ctx.fillRect(0,0,W,H);
+  const vp = P(0, .3, L, cm);
+  const hb = ctx.createRadialGradient(vp[0], vp[1], 0, vp[0], vp[1], 900);
+  hb.addColorStop(0,'rgba(210,130,70,.28)'); hb.addColorStop(.35,'rgba(90,70,60,.10)'); hb.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle = hb; ctx.fillRect(0,0,W,H);
+
+  // tray side rails (two long L-angles) + rungs moving toward camera
+  for (const side of [-1.55, 1.55]) {
+    for (let z = .4; z < L; z *= 1.08) {
+      const z2 = z * 1.08;
+      const a = P(side, .16, z, cm), b = P(side, .16, z2, cm);
+      const a2 = P(side, -.05, z, cm), b2 = P(side, -.05, z2, cm);
+      const g = ctxFor(z); const f = fog(z);
+      const lit = .55 + .45 * Math.cos(((z + travel) / (RUNG*2)) * TAU) ** 2;
+      g.fillStyle = `rgba(${(62*lit)*f+12|0},${(70*lit)*f+14|0},${(76*lit)*f+16|0},1)`;
+      g.beginPath(); g.moveTo(a[0],a[1]); g.lineTo(b[0],b[1]); g.lineTo(b2[0],b2[1]); g.lineTo(a2[0],a2[1]); g.fill();
+      // top edge highlight
+      g.strokeStyle = `rgba(230,170,120,${.55*f})`; g.lineWidth = Math.max(.6, 6/z);
+      g.beginPath(); g.moveTo(a[0],a[1]); g.lineTo(b[0],b[1]); g.stroke();
+    }
+  }
+  // perforation slots on rails
+  for (const side of [-1.55, 1.55]) for (let i = 0; i < L / .5; i++) {
+    const z = i * .5 - (travel % .5) + .3; if (z < .3) continue;
+    const g = ctxFor(z), f = fog(z);
+    const a = P(side, .09, z, cm), b = P(side, .03, z + .22, cm);
+    g.fillStyle = `rgba(2,3,4,${.85*f})`;
+    g.fillRect(Math.min(a[0],b[0]), a[1], Math.max(1, Math.abs(b[0]-a[0])), Math.max(1, b[1]-a[1]));
+  }
+  // overhead LED battens passing (ceiling of the plant room)
+  for (let i = 0; i < L / (RUNG*2) + 1; i++) {
+    const z = i * RUNG * 2 - (t * SPEED) % (RUNG*2) + 1.0;
+    if (z < .6) continue;
+    const f = fog(z);
+    const a = P(-1.3, 3.1, z, cm), b = P(1.3, 3.1, z, cm);
+    const w = Math.max(1, 70 / z);
+    const g = z < 3.2 ? nx : z > 22 ? fx : mx;
+    g.strokeStyle = `rgba(235,240,236,${.9*f})`; g.lineWidth = w; g.lineCap='round';
+    g.beginPath(); g.moveTo(a[0],a[1]); g.lineTo(b[0],b[1]); g.stroke();
+    const mxp = (a[0]+b[0])/2, R = Math.max(30, 1400 / z);
+    const hl = gx.createRadialGradient(mxp, a[1], 0, mxp, a[1], R);
+    hl.addColorStop(0,`rgba(200,225,230,${.35*f})`); hl.addColorStop(1,'rgba(0,0,0,0)');
+    gx.fillStyle = hl; gx.fillRect(mxp-R, a[1]-R, 2*R, 2*R);
+    // pool of light on the tray below
+    const q = P(0, 0, z + .2, cm), R2 = Math.max(20, 1900 / z);
+    gx.save(); gx.translate(q[0], q[1]); gx.scale(1, .22);
+    const pl = gx.createRadialGradient(0,0,0,0,0,R2);
+    pl.addColorStop(0,`rgba(150,180,185,${.16*f})`); pl.addColorStop(1,'rgba(0,0,0,0)');
+    gx.fillStyle = pl; gx.fillRect(-R2,-R2,2*R2,2*R2); gx.restore();
+  }
+  for (let i = 0; i < L / RUNG + 1; i++) {
+    const z = i * RUNG - travel + .2;
+    if (z < .25) continue;
+    const g = ctxFor(z), f = fog(z);
+    const a = P(-1.55, -.02, z, cm), b = P(1.55, -.02, z, cm), d = P(-1.55, -.02, z+.12, cm);
+    const th = Math.max(1, Math.abs(d[1]-a[1]) + 26/z);
+    const gr = g.createLinearGradient(a[0],0,b[0],0);
+    gr.addColorStop(0,`rgba(${60*f+10|0},${66*f+10|0},${70*f+12|0},1)`);
+    gr.addColorStop(.5,`rgba(${88*f+14|0},${92*f+14|0},${96*f+16|0},1)`);
+    gr.addColorStop(1,`rgba(${60*f+10|0},${66*f+10|0},${70*f+12|0},1)`);
+    g.fillStyle = gr; g.fillRect(a[0], a[1], b[0]-a[0], th);
+  }
+
+  // cables
+  for (const cb of cables) {
+    const steps = 90;
+    let prev = null;
+    for (let k = 0; k <= steps; k++) {
+      const z = .3 * Math.pow(L/.3, k/steps);
+      const sag = Math.sin((z + travel) / RUNG * Math.PI) ** 2 * .012;
+      const p = P(cb.x, cb.y - sag, z, cm);
+      if (prev) {
+        const g = ctxFor(z), f = fog(z), w = Math.max(.7, cb.r * F / z);
+        const [r,gg,b] = cb.col;
+        g.strokeStyle = `rgb(${r*f*.55+6|0},${gg*f*.55+6|0},${b*f*.55+7|0})`;
+        g.lineWidth = w; g.lineCap = 'round';
+        g.beginPath(); g.moveTo(prev[0],prev[1]); g.lineTo(p[0],p[1]); g.stroke();
+        // specular sheen along top
+        g.strokeStyle = `rgba(255,${cb.phase?220:200},${cb.phase?190:180},${(cb.phase?.5:.22)*f})`;
+        g.lineWidth = Math.max(.4, w*.18);
+        g.beginPath(); g.moveTo(prev[0],prev[1]-w*.28); g.lineTo(p[0],p[1]-w*.28); g.stroke();
+      }
+      prev = p;
+    }
+    // current pulses, flowing away from camera, copper-white
+    for (const pu of cb.pulses) {
+      const u = ((t / T) * pu.k + pu.off) % 1;
+      const z = 2.2 + u * u * (L * .75);
+      const p = P(cb.x, cb.y + .01, z, cm);
+      const f = fog(z) * Math.sin(u * Math.PI) ** .8;
+      const rad = Math.min(cb.phase ? 34 : 22, Math.max(5, (cb.phase ? 2.4 : 1.6) * F / z * .12));
+      const [r,gg,b] = cb.phase ? cb.col : [235,150,90];
+      const gl = gx.createRadialGradient(p[0],p[1],0,p[0],p[1],rad*4);
+      gl.addColorStop(0,`rgba(255,240,220,${.95*f})`);
+      gl.addColorStop(.18,`rgba(${r},${gg},${b},${.7*f})`);
+      gl.addColorStop(1,'rgba(0,0,0,0)');
+      gx.fillStyle = gl; gx.fillRect(p[0]-rad*4,p[1]-rad*4,rad*8,rad*8);
+      // trail
+      const q = P(cb.x, cb.y + .01, Math.max(.4, z - 2.4), cm);
+      const tr = gx.createLinearGradient(q[0],q[1],p[0],p[1]);
+      tr.addColorStop(0,'rgba(0,0,0,0)'); tr.addColorStop(1,`rgba(${r},${gg},${b},${.55*f})`);
+      gx.strokeStyle = tr; gx.lineWidth = Math.min(10, Math.max(1.2, cb.r*F/z*.5)); gx.lineCap='round';
+      gx.beginPath(); gx.moveTo(q[0],q[1]); gx.lineTo(p[0],p[1]); gx.stroke();
+    }
+  }
+
+  // compose with depth of field
+  ctx.filter = 'blur(5px)'; ctx.drawImage(far,0,0);
+  ctx.filter = 'none'; ctx.drawImage(mid,0,0);
+  ctx.filter = 'blur(9px)'; ctx.drawImage(near,0,0);
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.filter = 'blur(14px)'; ctx.drawImage(glow,0,0);
+  ctx.filter = 'blur(2px)'; ctx.drawImage(glow,0,0);
+  ctx.filter = 'none';
+
+  // anamorphic streak at vanishing glow, breathing
+  const br = .5 + .5 * Math.sin(TAU * t / T * 2);
+  const st = ctx.createLinearGradient(0, vp[1], W, vp[1]);
+  st.addColorStop(.25,'rgba(0,0,0,0)'); st.addColorStop(.5,`rgba(255,180,120,${.22 + .12*br})`); st.addColorStop(.75,'rgba(0,0,0,0)');
+  ctx.filter='blur(3px)'; ctx.fillStyle = st; ctx.fillRect(0, vp[1]-3, W, 6); ctx.filter='none';
+
+  // bokeh motes drifting (periodic)
+  for (const m of motes) {
+    const ML = SPEED * T; const z = (((m.z % ML) - t * SPEED) % ML + ML) % ML + .5;
+    const y = m.y + Math.sin(TAU * (t / T + m.ph)) * .06;
+    const p = P(m.x, y, z, cm);
+    const blur = Math.abs(z - 9) / 9;
+    const rad = Math.max(1.5, m.sz * 40 / z * (1 + blur * 2.4));
+    const a = fog(z) * .22 / (1 + blur * 1.5) * Math.min(1, z / 2);
+    const g = ctx.createRadialGradient(p[0],p[1],0,p[0],p[1],rad);
+    g.addColorStop(0,`rgba(255,200,150,${a})`); g.addColorStop(.7,`rgba(255,180,120,${a*.6})`); g.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p[0],p[1],rad,0,TAU); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
+  // grade: teal shadows / vignette
+  ctx.globalCompositeOperation = 'soft-light';
+  ctx.fillStyle = 'rgba(20,70,80,.35)'; ctx.fillRect(0,0,W,H);
+  ctx.globalCompositeOperation = 'source-over';
+  const vg = ctx.createRadialGradient(W/2,H*.45,H*.35,W/2,H*.5,H*1.05);
+  vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1,'rgba(0,0,0,.78)');
+  ctx.fillStyle = vg; ctx.fillRect(0,0,W,H);
+  // letterbox-ish top shade for headline legibility
+  const ts = ctx.createLinearGradient(0,H*.55,0,H);
+  ts.addColorStop(0,'rgba(0,0,0,0)'); ts.addColorStop(1,'rgba(0,0,0,.35)');
+  ctx.fillStyle = ts; ctx.fillRect(0,0,W,H);
+}
+window.renderFrame = (i, fps) => { draw((i / fps) % T); return true; };
+draw(0);
+</script></body></html>
